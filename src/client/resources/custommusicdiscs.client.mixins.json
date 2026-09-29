@@ -1,0 +1,12 @@
+{
+	"required": true,
+	"package": "com.custommusicdiscs.client.mixin",
+	"compatibilityLevel": "JAVA_25",
+	"client": [
+		"SoundManagerAccessor",
+		"SoundBufferLibraryMixin"
+	],
+	"injectors": {
+		"defaultRequire": 1
+	}
+}

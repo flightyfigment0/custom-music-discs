@@ -15,7 +15,7 @@ loom {
 	splitEnvironmentSourceSets()
 
 	mods {
-		"modid" {
+		"custom-music-discs" {
 			sourceSet sourceSets.main
 			sourceSet sourceSets.client
 		}
