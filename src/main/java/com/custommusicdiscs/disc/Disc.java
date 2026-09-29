@@ -16,7 +16,8 @@ public record Disc(
 		String id,
 		String fileName,
 		SoundEvent soundEvent,
-		byte[] audio
+		byte[] audio,
+		float durationSeconds
 ) {
 	public int audioLength() {
 		return audio.length;

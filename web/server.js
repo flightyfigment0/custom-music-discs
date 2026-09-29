@@ -29,8 +29,19 @@ function sanitizeId(raw) {
 }
 
 async function convertToOgg(inputPath, outputPath) {
+  // -vn / -map 0:a:0 keep only the first audio stream. Without them ffmpeg also
+  // copies an embedded cover-art video into the .ogg, which produces a multiplexed
+  // Theora + Vorbis file: bigger, and not all Ogg decoders want it.
   const proc = new Deno.Command(FFMPEG, {
-    args: ["-y", "-i", inputPath, "-c:a", "libvorbis", "-q:a", "5", outputPath],
+    args: [
+      "-y",
+      "-i", inputPath,
+      "-map", "0:a:0",
+      "-vn",
+      "-c:a", "libvorbis",
+      "-q:a", "5",
+      outputPath,
+    ],
     stdout: "piped",
     stderr: "piped",
   });
@@ -93,7 +104,7 @@ function pageHtml() {
 </style>
 </head>
 <body>
-<h1>&#127925; Music Disc Uploader</h1>
+<h1>Music Disc Uploader</h1>
 <p class="muted">Upload audio (mp3, wav, flac, m4a, ogg...). It is converted to .ogg,
 sanitized, and saved to the server's discs folder. Then run
 <span class="getdisc">/discs reload</span> in-game and grab it with

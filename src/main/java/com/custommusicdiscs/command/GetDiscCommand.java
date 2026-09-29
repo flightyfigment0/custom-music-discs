@@ -31,9 +31,9 @@ import java.util.stream.Collectors;
  * {@code /getdisc} - lists the available discs.
  * {@code /getdisc list} - same as listing the available discs.
  * <p>
- * Discs are one shared item whose jukebox song (sound, title, length) is embedded
- * directly into the stack's components, so each disc can carry its real song even
- * though the mod's registries stay fixed at init time.
+ * Discs are one shared item that points at the jukebox song registered for the
+ * disc's slot, so the stack stays saveable and every client can play the slot's
+ * sound event.
  */
 public final class GetDiscCommand {
 	private GetDiscCommand() {
@@ -67,14 +67,17 @@ public final class GetDiscCommand {
 		ItemStack stack = new ItemStack(DiscManager.discItem());
 		String displayName = CustomMusicDiscs.formatName(disc.id());
 
-		// Per-stack jukebox song: embedded directly (Holder.direct) so the title and
-		// length travel with the stack and the client can play the slot's sound event.
-		JukeboxSong song = new JukeboxSong(
-				Holder.direct(disc.soundEvent()),
-				Component.literal(displayName),
-				DiscManager.estimateDurationSeconds(disc.audioLength()),
-				15);
-		stack.set(DataComponents.JUKEBOX_PLAYABLE, new JukeboxPlayable(Holder.direct(song)));
+		// The song has to be the slot's registered one and not a value embedded in the
+		// stack: vanilla only writes a JUKEBOX_PLAYABLE by song name, so an embedded
+		// Holder.direct song made every disc unsavable and the game dropped it from
+		// inventories and jukeboxes on each save.
+		Holder.Reference<JukeboxSong> song = DiscManager.slotSong(disc.slot(), player.level().registryAccess())
+				.orElse(null);
+		if (song == null) {
+			source.sendFailure(Component.literal("Slot " + disc.slot() + " has no registered song."));
+			return 0;
+		}
+		stack.set(DataComponents.JUKEBOX_PLAYABLE, new JukeboxPlayable(song));
 		stack.set(DataComponents.CUSTOM_NAME, Component.literal("Music Disc \u2014 " + displayName));
 
 		if (!player.getInventory().add(stack)) {

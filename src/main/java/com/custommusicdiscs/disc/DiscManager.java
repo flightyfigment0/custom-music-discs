@@ -5,13 +5,20 @@ import com.custommusicdiscs.CustomMusicDiscs;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 
+import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
+import net.fabricmc.fabric.api.event.registry.DynamicRegistrySetupCallback;
+
+import net.minecraft.core.Holder;
 import net.minecraft.core.Registry;
+import net.minecraft.core.RegistryAccess;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.core.registries.Registries;
+import net.minecraft.network.chat.Component;
 import net.minecraft.resources.Identifier;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.sounds.SoundEvent;
 import net.minecraft.world.item.Item;
+import net.minecraft.world.item.JukeboxSong;
 import net.minecraft.world.item.Rarity;
 
 import java.io.IOException;
@@ -22,6 +29,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.TreeMap;
 
@@ -29,20 +37,33 @@ import java.util.TreeMap;
  * Manages the fixed pool of disc slots.
  * <p>
  * Because the game's registries are frozen after bootstrap, the mod pre-registers
- * a fixed number of sound events (one per slot) plus a single shared disc item at
- * init time, on both the server and the client. Uploaded audio files are assigned
- * to free slots; the {@code /discs reload} command rescans the discs folders and
- * re-broadcasts the current slot contents to every connected player.
+ * a fixed number of sound events and jukebox songs (one per slot) plus a single
+ * shared disc item at init time, on both the server and the client. Uploaded audio
+ * files are assigned to free slots; the {@code /discs reload} command rescans the
+ * discs folders and re-broadcasts the current slot contents to every connected
+ * player. A disc item points at its slot's song by name so that it survives saving.
  */
 public final class DiscManager {
 	/** How many discs the server can hold. Must match between client and server (it is a shared constant). */
 	public static final int SLOT_COUNT = 16;
 	public static final String ITEM_ID = "custom_music_disc";
 
+	/**
+	 * Length given to a slot that holds no disc when the songs are registered. An empty
+	 * slot cannot get the real length (there is no file yet), and zero would make a
+	 * jukebox stop a disc uploaded later the instant it started, so leave room for a
+	 * typical track instead.
+	 */
+	private static final float UNKNOWN_SLOT_SECONDS = 600f;
+
 	private static final Disc[] SLOTS = new Disc[SLOT_COUNT];
 	private static final Map<String, Integer> ID_TO_SLOT = new LinkedHashMap<>();
 	private static final Map<Integer, SoundEvent> SLOT_SOUNDS = new LinkedHashMap<>();
+	private static final Map<Integer, Holder.Reference<SoundEvent>> SLOT_SOUND_HOLDERS = new LinkedHashMap<>();
 	private static final Path SLOTS_FILE = DiscPaths.configRoot().resolve("slots.json");
+
+	/** True once the jukebox songs are registered, i.e. after the init-time scan. */
+	private static boolean SONGS_REGISTERED;
 
 	private static Item discItem;
 
@@ -56,16 +77,18 @@ public final class DiscManager {
 	public static void init() {
 		registerPool();
 		reload();
+		hookSongRegistration();
 	}
 
 	private static void registerPool() {
 		for (int slot = 0; slot < SLOT_COUNT; slot++) {
 			Identifier soundId = slotSoundId(slot);
-			SoundEvent sound = Registry.register(
+			Holder.Reference<SoundEvent> holder = Registry.registerForHolder(
 					BuiltInRegistries.SOUND_EVENT,
-					soundId,
+					ResourceKey.create(Registries.SOUND_EVENT, soundId),
 					SoundEvent.createVariableRangeEvent(soundId));
-			SLOT_SOUNDS.put(slot, sound);
+			SLOT_SOUNDS.put(slot, holder.value());
+			SLOT_SOUND_HOLDERS.put(slot, holder);
 		}
 
 		Identifier itemId = CustomMusicDiscs.id(ITEM_ID);
@@ -74,6 +97,81 @@ public final class DiscManager {
 				.rarity(Rarity.RARE)
 				.setId(ResourceKey.create(Registries.ITEM, itemId));
 		discItem = Registry.register(BuiltInRegistries.ITEM, itemId, new Item(properties));
+	}
+
+	/**
+	 * Registers one {@link JukeboxSong} per slot when the dynamic registries are set up.
+	 * <p>
+	 * A disc item stores its song as a registry reference, not as a value embedded in the
+	 * stack, because vanilla's {@code JUKEBOX_PLAYABLE} codec only writes a song by name.
+	 * Embedding the song with {@code Holder.direct} produced items that could not be
+	 * saved: every world save dropped them from inventories and jukeboxes. Registering
+	 * the songs makes the items serializable.
+	 * <p>
+	 * {@code jukebox_song} is a data pack registry, so the entries are added while it is
+	 * still being built and are then synced to every client like any other. That also
+	 * means a slot's title and length are fixed for as long as the world stays loaded:
+	 * a later {@code /discs reload} changes the audio immediately but needs a restart
+	 * for the jukebox's title and stop timer to match.
+	 */
+	private static void hookSongRegistration() {
+		DynamicRegistrySetupCallback.EVENT.register(view -> {
+			Optional<Registry<JukeboxSong>> optional = view.getOptional(Registries.JUKEBOX_SONG);
+			if (optional.isEmpty()) {
+				// The setup callback also runs for passes that do not build this registry.
+				// Failing here would abort the world's data pack load, so step aside.
+				CustomMusicDiscs.LOGGER.debug("No jukebox_song registry in this setup pass; skipping disc songs.");
+				return;
+			}
+			Registry<JukeboxSong> registry = optional.get();
+			for (int slot = 0; slot < SLOT_COUNT; slot++) {
+				Holder.Reference<SoundEvent> sound = SLOT_SOUND_HOLDERS.get(slot);
+				Disc disc = SLOTS[slot];
+				Component description = disc == null
+						? Component.literal("Empty disc slot")
+						: Component.literal(CustomMusicDiscs.formatName(disc.id()));
+				float duration = disc == null ? UNKNOWN_SLOT_SECONDS : disc.durationSeconds();
+				Registry.register(registry, songKey(slot), new JukeboxSong(sound, description, duration, 15));
+			}
+			SONGS_REGISTERED = true;
+			CustomMusicDiscs.LOGGER.info("Registered {} jukebox songs for the disc slots.", SLOT_COUNT);
+		});
+
+		// The setup callback runs more than once and not every pass holds the song
+		// registry, so confirm against the registries the server ends up serving.
+		ServerLifecycleEvents.SERVER_STARTED.register(server -> logSongStatus(server.registryAccess()));
+	}
+
+	/** Reports which slot songs the running server can actually hand out. */
+	private static void logSongStatus(RegistryAccess access) {
+		Optional<Registry<JukeboxSong>> optional = access.lookup(Registries.JUKEBOX_SONG);
+		if (optional.isEmpty()) {
+			CustomMusicDiscs.LOGGER.error("The jukebox_song registry is missing, so no disc can be given out.");
+			return;
+		}
+		int present = 0;
+		for (int slot = 0; slot < SLOT_COUNT; slot++) {
+			if (optional.get().getOptional(songKey(slot)).isPresent()) {
+				present++;
+			}
+		}
+		SONGS_REGISTERED = present > 0;
+		CustomMusicDiscs.LOGGER.info("{} of {} disc slot songs are available on this server.",
+				present, SLOT_COUNT);
+	}
+
+	/** The registry name of a slot's song. */
+	public static ResourceKey<JukeboxSong> songKey(int slot) {
+		return ResourceKey.create(Registries.JUKEBOX_SONG, slotSoundId(slot));
+	}
+
+	/**
+	 * The registered song for a slot, which disc items must reference to stay
+	 * serializable. Resolved from the given registries so it stays correct after a
+	 * world reload; empty if the song is not there.
+	 */
+	public static Optional<Holder.Reference<JukeboxSong>> slotSong(int slot, RegistryAccess access) {
+		return access.lookup(Registries.JUKEBOX_SONG).flatMap(songs -> songs.get(songKey(slot)));
 	}
 
 	public static Identifier slotSoundId(int slot) {
@@ -142,6 +240,11 @@ public final class DiscManager {
 			}
 		}
 
+		List<Disc> previous = all();
+		String[] previousIds = new String[SLOT_COUNT];
+		for (Disc disc : previous) {
+			previousIds[disc.slot()] = disc.id();
+		}
 		for (int slot = 0; slot < SLOT_COUNT; slot++) {
 			SLOTS[slot] = null;
 		}
@@ -160,6 +263,21 @@ public final class DiscManager {
 		} else {
 			CustomMusicDiscs.LOGGER.info("Loaded {} custom music disc(s): {}", discs.size(),
 					discs.stream().map(Disc::id).toList());
+		}
+
+		// The audio for a changed slot takes effect immediately, but a slot's jukebox
+		// title and length live in a registry entry fixed at startup, so only say so
+		// once that entry exists (otherwise this is the init-time scan, where it is not true).
+		if (SONGS_REGISTERED) {
+			for (int slot = 0; slot < SLOT_COUNT; slot++) {
+				Disc now = SLOTS[slot];
+				if (!Objects.equals(previousIds[slot], now == null ? null : now.id())) {
+					CustomMusicDiscs.LOGGER.info("Slot {} changed from {} to {}; its jukebox title and length "
+							+ "refresh on the next server start.", slot,
+							previousIds[slot] == null ? "empty" : previousIds[slot],
+							now == null ? "empty" : now.id());
+				}
+			}
 		}
 
 		return new ReloadResult(discs, removed);
@@ -197,7 +315,13 @@ public final class DiscManager {
 			CustomMusicDiscs.LOGGER.error("Could not read disc file {}: {}", file, e.toString());
 			return null;
 		}
-		return new Disc(slot, id, file.getFileName().toString(), SLOT_SOUNDS.get(slot), audio);
+		return new Disc(slot, id, file.getFileName().toString(), SLOT_SOUNDS.get(slot), audio, durationOf(audio));
+	}
+
+	/** The real playing time, falling back to a size estimate if the file is unreadable. */
+	private static float durationOf(byte[] audio) {
+		float duration = OggDuration.seconds(audio);
+		return duration > 0f ? duration : estimateDurationSeconds(audio.length);
 	}
 
 	private static int firstFreeSlot(boolean[] used) {
@@ -210,9 +334,9 @@ public final class DiscManager {
 	}
 
 	/**
-	 * Rough duration estimate used for the jukebox song length (so the jukebox knows
-	 * when the "song" is over). Assumes roughly 128kbps (16 KB/s) OGG Vorbis; good
-	 * enough for jukebox stop timing.
+	 * Size-based duration estimate, used only when the file is not a readable Ogg
+	 * Vorbis stream. Assumes roughly 128kbps (16 KB/s); the real length is preferred
+	 * whenever {@link OggDuration} can read it.
 	 */
 	public static float estimateDurationSeconds(int byteCount) {
 		if (byteCount <= 0) {
