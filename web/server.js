@@ -205,6 +205,9 @@ async function handle(req) {
         await convertToOgg(tmpIn, tmpOut);
         const finalPath = `${DISC_DIR}/${base}.ogg`;
         await Deno.copyFile(tmpOut, finalPath);
+        // makeTempFile leaves the destination 0600; the Minecraft server may run
+        // under a different user than this uploader, so the disc must be group/world readable.
+        await Deno.chmod(finalPath, 0o644);
         return json(req, 200, { id: base, fileName: `${base}.ogg`, note: "Run /discs reload in-game." });
       } finally {
         await Deno.remove(tmpIn, { force: true });
