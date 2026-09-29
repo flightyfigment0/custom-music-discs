@@ -6,7 +6,7 @@
 //
 // Run:
 //   DISC_DIR=$HOME/serverTest/config/custom-music-discs/discs \
-//   deno run --allow-net --allow-read --allow-write --allow-run=ffmpeg web/server.js
+//   deno run --allow-net --allow-read --allow-write --allow-run=ffmpeg --allow-env web/server.js
 //
 // Config via env vars:
 //   DISC_DIR  (default: ./config/custom-music-discs/discs relative to cwd)
@@ -68,7 +68,7 @@ function json(res, status, body) {
 }
 
 function pageHtml() {
-  return `<!doctype html>
+  return String.raw`<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
