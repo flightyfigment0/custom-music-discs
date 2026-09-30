@@ -49,6 +49,13 @@ public final class DiscManager {
 	public static final String ITEM_ID = "custom_music_disc";
 
 	/**
+	 * The slot the legacy shared item stands in for. Discs given out before 2.1.0 are all
+	 * that one item, so it has to keep meaning a real slot for those stacks to stay
+	 * playable.
+	 */
+	private static final int LEGACY_SLOT = 0;
+
+	/**
 	 * Length given to a slot that holds no disc when the songs are registered. An empty
 	 * slot cannot get the real length (there is no file yet), and zero would make a
 	 * jukebox stop a disc uploaded later the instant it started, so leave room for a
@@ -60,12 +67,11 @@ public final class DiscManager {
 	private static final Map<String, Integer> ID_TO_SLOT = new LinkedHashMap<>();
 	private static final Map<Integer, SoundEvent> SLOT_SOUNDS = new LinkedHashMap<>();
 	private static final Map<Integer, Holder.Reference<SoundEvent>> SLOT_SOUND_HOLDERS = new LinkedHashMap<>();
+	private static final Map<Integer, Item> SLOT_ITEMS = new LinkedHashMap<>();
 	private static final Path SLOTS_FILE = DiscPaths.configRoot().resolve("slots.json");
 
 	/** True once the jukebox songs are registered, i.e. after the init-time scan. */
 	private static boolean SONGS_REGISTERED;
-
-	private static Item discItem;
 
 	private DiscManager() {
 	}
@@ -91,12 +97,31 @@ public final class DiscManager {
 			SLOT_SOUND_HOLDERS.put(slot, holder);
 		}
 
-		Identifier itemId = CustomMusicDiscs.id(ITEM_ID);
+		// One item per slot, so each disc can have its own texture. They all share the
+		// same behaviour: which song plays comes from the stack's JUKEBOX_PLAYABLE
+		// component, not from the item type.
+		for (int slot = 0; slot < SLOT_COUNT; slot++) {
+			SLOT_ITEMS.put(slot, registerDiscItem(itemId(slot)));
+		}
+
+		// Earlier versions shipped a single shared item. Keep it registered and pointing
+		// at slot 0 so discs already sitting in a world survive instead of turning into
+		// an unknown item that the next save deletes.
+		Item legacy = registerDiscItem(CustomMusicDiscs.id(ITEM_ID));
+		SLOT_ITEMS.put(LEGACY_SLOT, legacy);
+	}
+
+	private static Item registerDiscItem(Identifier id) {
 		Item.Properties properties = new Item.Properties()
 				.stacksTo(1)
 				.rarity(Rarity.RARE)
-				.setId(ResourceKey.create(Registries.ITEM, itemId));
-		discItem = Registry.register(BuiltInRegistries.ITEM, itemId, new Item(properties));
+				.setId(ResourceKey.create(Registries.ITEM, id));
+		return Registry.register(BuiltInRegistries.ITEM, id, new Item(properties));
+	}
+
+	/** The registry name of a slot's disc item, e.g. custom-music-discs:custom_music_disc_3. */
+	public static Identifier itemId(int slot) {
+		return CustomMusicDiscs.id(ITEM_ID + "_" + slot);
 	}
 
 	/**
@@ -182,8 +207,14 @@ public final class DiscManager {
 		return SLOT_SOUNDS.get(slot);
 	}
 
+	/** The disc item for a slot, which is what carries that slot's texture. */
+	public static Item discItem(int slot) {
+		return SLOT_ITEMS.get(slot);
+	}
+
+	/** The legacy shared disc item, kept so discs from before 2.1.0 still resolve. */
 	public static Item discItem() {
-		return discItem;
+		return SLOT_ITEMS.get(LEGACY_SLOT);
 	}
 
 	/**

@@ -64,7 +64,8 @@ public final class GetDiscCommand {
 			return 0;
 		}
 
-		ItemStack stack = new ItemStack(DiscManager.discItem());
+		// The slot's own item, so the disc shows that slot's colour.
+		ItemStack stack = new ItemStack(DiscManager.discItem(disc.slot()));
 		String displayName = CustomMusicDiscs.formatName(disc.id());
 
 		// The song has to be the slot's registered one and not a value embedded in the
