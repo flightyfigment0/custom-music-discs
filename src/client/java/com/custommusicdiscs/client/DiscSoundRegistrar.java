@@ -27,9 +27,23 @@ public final class DiscSoundRegistrar {
 	private DiscSoundRegistrar() {
 	}
 
-	/** The resource location of a slot's sound file, e.g. custom-music-discs:sounds/disc_slot_3.ogg. */
+	/**
+	 * A slot's sound id, e.g. {@code custom-music-discs:disc_slot_3}. This is the form a
+	 * {@link Sound} stores: the audio engine turns it into a file location with
+	 * {@code getPath()} before opening it.
+	 */
+	public static Identifier soundId(int slot) {
+		return DiscManager.slotSoundId(slot);
+	}
+
+	/**
+	 * The file the engine actually opens for a slot, e.g.
+	 * {@code custom-music-discs:sounds/disc_slot_3.ogg}. Derived with the same converter
+	 * vanilla uses so it cannot drift from what {@link Sound#getPath()} produces; this is
+	 * also the audio cache key.
+	 */
 	public static Identifier soundFileLocation(int slot) {
-		return CustomMusicDiscs.id("sounds/disc_slot_" + slot + ".ogg");
+		return Sound.SOUND_LISTER.idToFile(soundId(slot));
 	}
 
 	/**
@@ -44,15 +58,17 @@ public final class DiscSoundRegistrar {
 			return;
 		}
 
-		// The Sound's location is what the audio engine opens via SoundBufferLibrary,
-		// which our mixin serves from the audio cache — it MUST be the cache key.
+		// The Sound must be given the sound ID, not the file location: the engine opens
+		// Sound.getPath(), which runs the id through the sounds converter. Handing it a
+		// path that already reads "sounds/...ogg" makes the engine look for
+		// "sounds/sounds/...ogg.ogg", the audio cache misses, and playback fails silently.
 		Identifier fileLocation = soundFileLocation(slot);
 		if (!DiscAudioCache.has(fileLocation)) {
 			CustomMusicDiscs.LOGGER.warn("Slot {} has no cached audio yet; sound will not play until bytes arrive.", slot);
 		}
 
 		Sound sound = new Sound(
-				fileLocation,
+				soundId(slot),
 				r -> 1.0f,
 				r -> 1.0f,
 				1,
